@@ -1,0 +1,308 @@
+############################################################
+# Supplementary Material: B-GLIRT models in lavaan
+# A Unified Framework for Jointly modelling Response Times 
+# and Item Position Effects
+# in Computer-Based Learning Assessments
+# Joint modeling item responses + response times + position
+# Single-group (MOD1, MOD2, MOD3, MOD1+covariates) +
+# Multi-group (MOD1-based: MOD1_1, MOD1_2, MOD1_3)
+############################################################
+
+library(lavaan)
+
+# ==========================================================
+# 0) DATA - The data were simulated for illustrative purposes
+# ==========================================================
+setwd(....)
+load("dataset_SM.RData")
+
+# ==========================================================
+# 1) ITEM NAMES (default: item1..item10)
+#    Columns expected:
+#      itemj_answer, itemj_time, itemj_position
+# ==========================================================
+items <- paste0("item", 1:10)
+ans  <- paste0(items, "_answer")
+time <- paste0(items, "_time")
+pos  <- paste0(items, "_position")
+J <- length(items)
+
+# ==========================================================
+# 1b) DICHOTOMIZE Cov2: "Type G" vs all others  
+# ==========================================================
+if ("Cov2" %in% names(dataset)) {
+
+  # convert to character and trim spaces
+  cov2_chr <- trimws(as.character(dataset$Cov2))
+
+  # dichotomous variable: 1 = Type G, 0 = all others
+  dataset$Cov2_G <- ifelse(cov2_chr == "Type G", 1, 0)
+
+  # keep missing values as NA
+  dataset$Cov2_G[is.na(dataset$Cov2)] <- NA
+}
+# ==========================================================
+# 2) BUILDING BLOCKS (lavaan syntax constructors)
+# ==========================================================
+
+meas_block <- function(ans, time){
+  J <- length(ans)
+  alpha <- paste0("alpha", 1:J, "*", ans,  collapse = " + ")
+  gamma <- paste0("gamma", 1:J, "*", time, collapse = " + ")
+  cross <- paste0("crossfunc", 1:J, "*", time, collapse = " + ")
+
+  paste0(
+    "Theta =~ ", alpha, "\n",
+    "Eta   =~ ", gamma, "\n",
+    "Theta =~ ", cross, "\n",
+    "Theta ~~ 0*Eta\n"
+  )
+}
+
+pos_effects <- function(ans, time, pos, omega = FALSE, zeta_item_specific = FALSE){
+  J <- length(ans)
+
+  ans_part <- if (omega) {
+    paste0(ans, " ~ omega1*", pos, collapse = "\n")
+  } else {
+    paste0(ans, " ~ 0*", pos, collapse = "\n")
+  }
+
+  time_part <- if (zeta_item_specific) {
+    paste0(time, " ~ zeta1_", 1:J, "*", pos, collapse = "\n")
+  } else {
+    paste0(time, " ~ zeta1*", pos, collapse = "\n")
+  }
+
+  paste0(ans_part, "\n\n", time_part, "\n")
+}
+
+rho_constraints_single <- function(J){
+  eqs <- paste0("crossfunc", 1:J, " == -gamma", 1:J, "*rho1", collapse = "\n")
+  paste0(
+    "ph =~ 0\n",
+    "ph ~ NA*1 + label(\"rho1\")*1\n",
+    eqs, "\n"
+  )
+}
+
+fit_model <- function(model_syntax, ans, dataset, group = NULL, group.equal = NULL){
+  sem(
+    model = model_syntax,
+    ordered = ans,
+    data = dataset,
+    missing = "pairwise",
+    std.lv = TRUE,
+    group = group,
+    group.equal = group.equal
+  )
+}
+
+# ---- Multi-group helpers ----
+thresh_block <- function(ans){
+  paste0(ans, " ~*~ 1*", ans, collapse = "\n")
+}
+
+lambda_block <- function(time){
+  paste0(
+    time, " ~ c(lambda", 1:length(time), ",lambda", 1:length(time), ")*1",
+    collapse = "\n"
+  )
+}
+
+pos_block_mod1 <- function(ans, time, pos){
+  ans_part  <- paste0(ans, " ~ 0*", pos, collapse = "\n")
+  time_part <- paste0(time, " ~ zeta1*", pos, collapse = "\n")
+  paste0(ans_part, "\n\n", time_part)
+}
+
+rho_constraints_two <- function(J){
+  eqs_g1 <- paste0("crossfunc",   1:J, " == -gamma", 1:J, "*rho1",  collapse = "\n")
+  eqs_g2 <- paste0("crossfunc2_", 1:J, " == -gamma", 1:J, "*rho12", collapse = "\n")
+  paste0(
+    "ph =~ 0\n",
+    "ph ~ NA*1 + label(\"rho1\")*1\n",
+    "ph2 =~ 0\n",
+    "ph2 ~ NA*1 + label(\"rho12\")*1\n",
+    eqs_g1, "\n",
+    eqs_g2, "\n"
+  )
+}
+
+# ==========================================================
+# 3) SINGLE-GROUP MODELS (MOD1, MOD2, MOD3, MOD1+Covariates)
+# ==========================================================
+base_meas <- meas_block(ans, time)
+base_rho  <- rho_constraints_single(J)
+
+# MOD1: position effect only on response times, common across items
+mod1 <- paste0(
+  base_meas, "\n",
+  pos_effects(ans, time, pos, omega = FALSE, zeta_item_specific = FALSE),
+  base_rho
+)
+
+# MOD2: position effect on both responses and response times, common across items
+mod2 <- paste0(
+  base_meas, "\n",
+  pos_effects(ans, time, pos, omega = TRUE, zeta_item_specific = FALSE),
+  base_rho
+)
+
+# MOD3: position effect only on response times, item-specific (zeta1_j)
+mod3 <- paste0(
+  base_meas, "\n",
+  pos_effects(ans, time, pos, omega = FALSE, zeta_item_specific = TRUE),
+  base_rho
+)
+
+cat("\n==================== SINGLE-GROUP: MOD1 ====================\n")
+fit_mod1 <- fit_model(mod1, ans, dataset)
+print(summary(fit_mod1, fit.measures = TRUE))
+
+cat("\n==================== SINGLE-GROUP: MOD2 ====================\n")
+fit_mod2 <- fit_model(mod2, ans, dataset)
+print(summary(fit_mod2, fit.measures = TRUE))
+
+cat("\n==================== SINGLE-GROUP: MOD3 ====================\n")
+fit_mod3 <- fit_model(mod3, ans, dataset)
+print(summary(fit_mod3, fit.measures = TRUE))
+
+# ---- MOD1 + covariates  ----
+if (all(c("Cov1","Cov2_G") %in% names(dataset))) {
+  mod1cov <- paste0(
+    base_meas, "\n",
+    "Theta ~ bTh_1*Cov1 + bTh_2*Cov2_G\n",
+    "Eta   ~ bEta_1*Cov1 + bEta_2*Cov2_G\n\n",
+    pos_effects(ans, time, pos, omega = FALSE, zeta_item_specific = FALSE),
+    base_rho
+  )
+  cat("\n==================== SINGLE-GROUP: MOD1 + COVARIATES  ====================\n")
+  fit_mod1cov <- fit_model(mod1cov, ans, dataset)
+  print(summary(fit_mod1cov, fit.measures = TRUE))
+} else {
+  cat("\n[SKIP] MOD1 + COVARIATES: Cov1 and/or Cov2_G not found in the data.\n",
+      "       Available covariates: ",
+      paste(intersect(c("Cov1","Cov2","Cov2_G","Age","Type_school","Type of school"), names(dataset)), collapse=", "),
+      "\n", sep = "")
+}
+
+# ==========================================================
+# 4) MULTI-GROUP MODELS (MOD1-based) by group = 'Sex'
+# Warning: The procedure may require several minutes to complete.
+# ==========================================================
+# MOD1_1: baseline MG, all loadings equal, thresholds+residuals equal
+  mod1_1 <- paste0(
+    "Theta =~ ", paste0("c(alpha", 1:J, ",alpha", 1:J, ")*", ans,  collapse = " + "), "\n\n",
+    "Eta   =~ ", paste0("c(gamma", 1:J, ",gamma", 1:J, ")*", time, collapse = " + "), "\n\n",
+    "Theta =~ ", paste0("c(crossfunc", 1:J, ",crossfunc", 1:J, ")*", time, collapse = " + "), "\n\n",
+    "Theta ~~ 0*Eta\n",
+    "Theta ~~ c(NA,1)*Theta\n",
+    "Eta   ~~ c(NA,1)*Eta\n\n",
+    thresh_block(ans), "\n\n",
+    lambda_block(time), "\n\n",
+    "Eta ~ c(NA,0)*1\n\n",
+    pos_block_mod1(ans, time, pos), "\n\n",
+    rho_constraints_single(J)
+  )
+
+  cat("\n==================== MULTI-GROUP: MOD1_1 (baseline) ====================\n")
+  fit_mod1_1 <- sem(
+    model = mod1_1,
+    ordered = ans,
+    data = dataset,
+    group = "Sex",
+    missing = "pairwise",
+    std.lv = TRUE,
+    group.equal = c("thresholds", "residuals")
+  )
+  print(summary(fit_mod1_1, fit.measures = TRUE))
+
+  # MOD1_2: item1 loadings free across groups (alpha1, gamma1, crossfunc1), rho common
+  mod1_2 <- paste0(
+    "Theta =~ ",
+    paste0(
+      c(
+        paste0("c(alpha1,alpha1_2)*", ans[1]),
+        paste0("c(alpha", 2:J, ",alpha", 2:J, ")*", ans[2:J])
+      ),
+      collapse = " + "
+    ), "\n\n",
+
+    "Eta =~ ",
+    paste0(
+      c(
+        paste0("c(gamma1,gamma1_2)*", time[1]),
+        paste0("c(gamma", 2:J, ",gamma", 2:J, ")*", time[2:J])
+      ),
+      collapse = " + "
+    ), "\n\n",
+
+    "Theta =~ ",
+    paste0(
+      c(
+        paste0("c(crossfunc1,crossfunc1_2)*", time[1]),
+        paste0("c(crossfunc", 2:J, ",crossfunc", 2:J, ")*", time[2:J])
+      ),
+      collapse = " + "
+    ), "\n\n",
+
+    "Theta ~~ 0*Eta\n",
+    "Theta ~~ c(NA,1)*Theta\n",
+    "Eta   ~~ c(NA,1)*Eta\n\n",
+
+    thresh_block(ans), "\n\n",
+    lambda_block(time), "\n\n",
+
+    "Eta ~ c(NA,0)*1\n\n",
+
+    pos_block_mod1(ans, time, pos), "\n\n",
+
+    "ph =~ 0\n",
+    "ph ~ NA*1 + label(\"rho1\")*1\n",
+    "crossfunc1   == -gamma1*rho1\n",
+    "crossfunc1_2 == -gamma1_2*rho1\n",
+    paste0("crossfunc", 2:J, " == -gamma", 2:J, "*rho1", collapse = "\n"), "\n"
+  )
+
+  cat("\n==================== MULTI-GROUP: MOD1_2 (item1 loadings free) ====================\n")
+  fit_mod1_2 <- sem(
+    model = mod1_2,
+    ordered = ans,
+    data = dataset,
+    group = "Sex",
+    missing = "pairwise",
+    std.lv = TRUE,
+    group.equal = c("thresholds", "residuals")
+  )
+  print(summary(fit_mod1_2, fit.measures = TRUE))
+
+  # MOD1_3: alpha and gamma equal; rho differs across groups, crossfunc differs for all items
+  mod1_3 <- paste0(
+    "Theta =~ ", paste0("c(alpha", 1:J, ",alpha", 1:J, ")*", ans,  collapse = " + "), "\n\n",
+    "Eta   =~ ", paste0("c(gamma", 1:J, ",gamma", 1:J, ")*", time, collapse = " + "), "\n\n",
+    "Theta =~ ", paste0("c(crossfunc", 1:J, ",crossfunc2_", 1:J, ")*", time, collapse = " + "), "\n\n",
+    "Theta ~~ 0*Eta\n",
+    "Theta ~~ c(NA,1)*Theta\n",
+    "Eta   ~~ c(NA,1)*Eta\n\n",
+    thresh_block(ans), "\n\n",
+    lambda_block(time), "\n\n",
+    "Eta ~ c(NA,0)*1\n\n",
+    pos_block_mod1(ans, time, pos), "\n\n",
+    rho_constraints_two(J)
+  )
+
+  cat("\n==================== MULTI-GROUP: MOD1_3 (rho differs) ====================\n")
+  fit_mod1_3 <- sem(
+    model = mod1_3,
+    ordered = ans,
+    data = dataset,
+    group = "Sex",
+    missing = "pairwise",
+    std.lv = TRUE,
+    group.equal = c("thresholds", "residuals")
+  )
+  print(summary(fit_mod1_3, fit.measures = TRUE))
+}
+
+cat("\n\nDONE: all models estimated in sequence.\n")
